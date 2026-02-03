@@ -34,13 +34,7 @@ jobs:
         mkdir -p debian_package/{DEBIAN,opt/arculus-devops-challenge}
         pip install --target=debian_package/opt/arculus-devops-challenge -r requirements.txt
         cp -r apps tests debian_package/opt/arculus-devops-challenge/
-        echo "Package: arculus-devops-challenge
-              Version: 1.0.0
-              Section: base
-              Priority: optional
-              Architecture: all
-              Maintainer: Your Name <your.email@example.com>
-              Description: Flask app with /health and /orders endpoints" > debian_package/DEBIAN/control
+        echo -e "Package: arculus-devops-challenge\nVersion: 1.0.0\nSection: base\nPriority: optional\nArchitecture: all\nMaintainer: Your Name <your.email@example.com>\nDescription: Flask app with /health and /orders endpoints" > debian_package/DEBIAN/control
         dpkg-deb --build debian_package
 
     # Step 4: Test .deb package installation
