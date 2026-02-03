@@ -3,14 +3,21 @@ name: CI Workflow - Build & Test Debian Package
 on:
   push:
     branches:
-      - "**"  # Run on push to any branch
+      - "**"
   pull_request:
     branches:
-      - "**"  # Run on all pull requests
+      - "**"
 
 jobs:
   build-and-test-deb:
     runs-on: ubuntu-latest
+
+    env:
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_NAME: ${{ secrets.DB_NAME }}
 
     steps:
     # Step 1: Check out the repository
@@ -24,13 +31,9 @@ jobs:
     # Step 3: Build .deb package
     - name: Build .deb package
       run: |
-        # Create the Debian package structure
         mkdir -p debian_package/{DEBIAN,opt/arculus-devops-challenge}
-        # Install Python dependencies into the package directory
         pip install --target=debian_package/opt/arculus-devops-challenge -r requirements.txt
-        # Copy app files into the Debian package
-        cp -r apps tests run.py passwords.env debian_package/opt/arculus-devops-challenge/
-        # Create the control file
+        cp -r apps tests debian_package/opt/arculus-devops-challenge/
         echo "Package: arculus-devops-challenge
               Version: 1.0.0
               Section: base
@@ -38,33 +41,25 @@ jobs:
               Architecture: all
               Maintainer: Your Name <your.email@example.com>
               Description: Flask app with /health and /orders endpoints" > debian_package/DEBIAN/control
-        # Build the .deb package
         dpkg-deb --build debian_package
 
-    # Step 4: Test the .deb package
+    # Step 4: Test .deb package installation
     - name: Test .deb package installation
       run: |
-        # Install the package
         sudo dpkg -i debian_package.deb
-        # Ensure dependencies are resolved
         sudo apt-get install -f -y
-        # Check that the app directory was installed
         if [ -d "/opt/arculus-devops-challenge" ]; then 
           echo "App installed correctly"; 
         else 
           echo "App installation failed"; 
           exit 1; 
         fi
-        # Check that systemd file exists
         if [ -f "/opt/arculus-devops-challenge/arculus-devops.service" ]; then
           echo "Systemd file exists";
         else
           echo "Systemd file missing";
           exit 1;
         fi
-        # (Optional) Start service - Uncomment if you have a fully working Flask service
-        # sudo systemctl start arculus-devops.service
-        # sudo systemctl status arculus-devops.service
 
     # Step 5: Upload the .deb file as an artifact
     - name: Upload .deb package
