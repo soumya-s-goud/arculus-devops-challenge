@@ -31,28 +31,28 @@ jobs:
     # Step 3: Build .deb package
     - name: Build .deb package
       run: |
-        mkdir -p debian_package/{DEBIAN,opt/arculus-devops-challenge/etc/systemd/system}
-        pip install --target=debian_package/opt/arculus-devops-challenge -r requirements.txt
-        cp -r apps tests debian_package/opt/arculus-devops-challenge/
+        mkdir -p debian_package/{DEBIAN,opt/arculus,etc/systemd/system}
+        pip install --target=debian_package/opt/arculus -r requirements.txt
+        cp -r apps tests debian_package/opt/arculus/
 
         # Create the systemd service file
         echo -e "[Unit]
-        Description=Arculus DevOps Flask Application
+        Description=Arculus Flask Application
         After=network.target
 
         [Service]
         User=www-data
         Group=www-data
-        WorkingDirectory=/opt/arculus-devops-challenge
-        ExecStart=/usr/bin/python3 /opt/arculus-devops-challenge/apps/main.py
+        WorkingDirectory=/opt/arculus
+        ExecStart=/usr/bin/python3 /opt/arculus/apps/main.py
         Restart=always
         RestartSec=5
 
         [Install]
-        WantedBy=multi-user.target" > debian_package/etc/systemd/system/arculus-devops.service
+        WantedBy=multi-user.target" > debian_package/etc/systemd/system/arculus.service
 
         # Create the control file
-        echo -e "Package: arculus-devops-challenge\nVersion: 1.0.0\nSection: base\nPriority: optional\nArchitecture: all\nMaintainer: Your Name <your.email@example.com>\nDescription: Flask app with /health and /orders endpoints" > debian_package/DEBIAN/control
+        echo -e "Package: arculus\nVersion: 1.0.0\nSection: base\nPriority: optional\nArchitecture: all\nMaintainer: Your Name <your.email@example.com>\nDescription: Flask app with /health and /orders endpoints" > debian_package/DEBIAN/control
         dpkg-deb --build debian_package
 
     # Step 4: Test .deb package installation
@@ -60,22 +60,22 @@ jobs:
       run: |
         sudo dpkg -i debian_package.deb
         sudo apt-get install -f -y
-        if [ -d "/opt/arculus-devops-challenge" ]; then 
+        if [ -d "/opt/arculus" ]; then 
           echo "App installed correctly"; 
         else 
           echo "App installation failed"; 
           exit 1; 
         fi
-        if [ -f "/etc/systemd/system/arculus-devops.service" ]; then
+        if [ -f "/etc/systemd/system/arculus.service" ]; then
           echo "Systemd file exists";
         else
           echo "Systemd file missing";
           exit 1;
         fi
 
-    # Step 5: Upload the .deb file as an artifact
+    # Step 5: Upload .deb file as an artifact
     - name: Upload .deb package
       uses: actions/upload-artifact@v4
       with:
-        name: arculus-devops-challenge.deb
+        name: arculus.deb
         path: debian_package.deb
