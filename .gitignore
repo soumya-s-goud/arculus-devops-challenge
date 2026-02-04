@@ -208,3 +208,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Terraform local state and provider cache
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/main.tf.bak
+
+# Local secrets / credentials / cluster config
+apps/passwords.env
+tls.key
+tls.crt
+.kube/config
+kubeconfig
+*.kubeconfig
