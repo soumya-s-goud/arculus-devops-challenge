@@ -2,12 +2,9 @@ name: deploy-to-kind
 
 on:
   push:
+    branches: [ "main", "part3-deploy-to-kind" ]
+  pull_request:
     branches: [ "main" ]
-    paths:
-      - 'Dockerfile'
-      - 'src/**'
-      - 'terraform/**'
-      - 'k8s/**'
   workflow_dispatch:
 
 jobs:
@@ -35,6 +32,7 @@ jobs:
           password: ${{ secrets.GHCR_PAT }}
 
       - name: Build and push image
+        id: build-image
         uses: docker/build-push-action@v4
         with:
           context: .
@@ -54,6 +52,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+
+    env:
+      NAMESPACE: orders
 
     steps:
       - name: Checkout (repo files for terraform / k8s)
@@ -77,16 +78,11 @@ jobs:
           sudo mv kubectl /usr/local/bin/kubectl
           kubectl version --client --short
 
-      - name: Restore kubeconfig from secret (if provided)
+      - name: Restore kubeconfig from secret
         run: |
-          if [ -z "${{ secrets.KUBE_CONFIG_DATA }}" ]; then
-            echo "KUBE_CONFIG_DATA secret not set; skipping kubeconfig restore"
-          else
-            echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > "${{ github.workspace }}/kubeconfig"
-            chmod 600 "${{ github.workspace }}/kubeconfig"
-            echo "KUBECONFIG=${{ github.workspace }}/kubeconfig" >> $GITHUB_ENV
-            echo "Restored kubeconfig to ${GITHUB_WORKSPACE}/kubeconfig"
-          fi
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > "${{ github.workspace }}/kubeconfig"
+          chmod 600 "${{ github.workspace }}/kubeconfig"
+          echo "KUBECONFIG=${{ github.workspace }}/kubeconfig" >> $GITHUB_ENV
         shell: bash
 
       - name: Verify cluster access
@@ -100,6 +96,42 @@ jobs:
         env:
           KUBECONFIG: ${{ env.KUBECONFIG }}
 
+      - name: Create TLS secret (self-signed) if missing
+        run: |
+          # create a self-signed cert if orders-tls does not exist
+          if ! kubectl get secret orders-tls -n ${NAMESPACE} >/dev/null 2>&1; then
+            echo "Generating self-signed cert for orders.local"
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+              -subj "/CN=orders.local/O=orders" \
+              -keyout key.pem -out cert.pem
+            kubectl create secret tls orders-tls -n ${NAMESPACE} --cert=cert.pem --key=key.pem --dry-run=client -o yaml | kubectl apply -f -
+            rm -f cert.pem key.pem
+            echo "Created orders-tls in namespace ${NAMESPACE}"
+          else
+            echo "orders-tls already exists"
+          fi
+        shell: bash
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+
+      - name: Create DB secret from GitHub Secrets (safe, no plaintext in repo)
+        run: |
+          # ensure required repo secrets exist (DB_NAME, DB_USER, DB_PASSWORD)
+          if [ -z "${{ secrets.DB_NAME }}${{ secrets.DB_USER }}${{ secrets.DB_PASSWORD }}" ]; then
+            echo "One or more DB secrets (DB_NAME, DB_USER, DB_PASSWORD) are missing. Exiting."
+            exit 1
+          fi
+          kubectl create secret generic orders-db-credentials -n ${NAMESPACE} \
+            --from-literal=POSTGRES_DB="${{ secrets.DB_NAME }}" \
+            --from-literal=POSTGRES_USER="${{ secrets.DB_USER }}" \
+            --from-literal=POSTGRES_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+            --from-literal=DATABASE_URL="postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@postgres.${NAMESPACE}.svc.cluster.local:5432/${{ secrets.DB_NAME }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "Applied orders-db-credentials secret in ${NAMESPACE}"
+        shell: bash
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+
       - name: Terraform init
         working-directory: ./terraform
         run: terraform init
@@ -109,4 +141,4 @@ jobs:
         env:
           KUBECONFIG: ${{ env.KUBECONFIG }}
         run: |
-          terraform apply -auto-approve -var="image_tag=${{ needs.build.outputs.image }}" -var="namespace=orders"
+          terraform apply -auto-approve -var="image_tag=${{ needs.build.outputs.image }}" -var="namespace=${NAMESPACE}"
