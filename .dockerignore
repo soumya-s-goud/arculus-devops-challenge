@@ -1,0 +1,33 @@
+# Ignore git and CI
+.git
+.gitignore
+.github
+# Tests and local artifacts
+tests
+.debian_package
+debian_package
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+*.sqlite3
+*.db
+venv
+env
+ENV/
+# Coverage and build outputs
+htmlcov
+coverage-html.zip
+coverage-html
+.coverage
+# Docker and local files
+.docker
+Dockerfile*
+docker-compose*
+# Editor files
+.idea
+.vscode
+*.swp
+*.swo
