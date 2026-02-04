@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orders-ingress
+  namespace: orders
+  annotations:
+    # nginx ingress controller example annotation to use the tls secret; adjust if using a different controller
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  tls:
+    - hosts:
+        - orders.local
+      secretName: orders-tls
+  rules:
+    - host: orders.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: orders
+                port:
+                  number: 8000
