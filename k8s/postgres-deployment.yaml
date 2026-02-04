@@ -38,6 +38,13 @@ spec:
                 secretKeyRef:
                   name: orders-db-credentials
                   key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
           readinessProbe:
             tcpSocket:
               port: 5432
