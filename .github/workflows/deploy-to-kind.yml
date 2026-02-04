@@ -10,51 +10,89 @@ on:
       - 'k8s/**'
 
 jobs:
-  build-and-deploy:
+  build:
+    name: Build and push image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ${{ steps.set-image.outputs.image }}
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-    - name: Login to GHCR
-      uses: docker/login-action@v2
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GHCR_PAT }}
+      - name: Login to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
 
-    - name: Build and push image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        file: ./Dockerfile
-        push: true
-        tags: ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:${{ github.sha }}
+      - name: Build and push image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:${{ github.sha }}
 
-    - name: Install Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: 1.14.4
+      - name: Export image name
+        id: set-image
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:${{ github.sha }}"
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
 
-    - name: Configure kubeconfig
-      run: |
-        echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > $GITHUB_WORKSPACE/kubeconfig
-        export KUBECONFIG=$GITHUB_WORKSPACE/kubeconfig
-      shell: bash
+  deploy:
+    name: Deploy to cluster (Terraform)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
-    - name: Terraform init
-      working-directory: ./terraform
-      run: terraform init
+    steps:
+      - name: Checkout (repo files for terraform / k8s)
+        uses: actions/checkout@v4
 
-    - name: Terraform apply
-      working-directory: ./terraform
-      env:
-        KUBECONFIG: $GITHUB_WORKSPACE/kubeconfig
-      run: terraform apply -auto-approve -var="image_tag=${{ github.sha }}" -var="namespace=orders"
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.14.4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: '1.27.0'
+
+      - name: Restore kubeconfig from secret
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > "${{ github.workspace }}/kubeconfig"
+          chmod 600 "${{ github.workspace }}/kubeconfig"
+          echo "KUBECONFIG=${{ github.workspace }}/kubeconfig" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Verify cluster access
+        run: |
+          if [ -z "${KUBECONFIG:-}" ]; then
+            echo "KUBECONFIG not set. Exiting."
+            exit 1
+          fi
+          kubectl version --short
+          kubectl cluster-info
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+
+      - name: Terraform init
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Terraform apply
+        working-directory: ./terraform
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+        run: |
+          terraform apply -auto-approve -var="image_tag=${{ needs.build.outputs.image }}" -var="namespace=orders"
