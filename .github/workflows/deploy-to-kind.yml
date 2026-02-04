@@ -2,143 +2,373 @@ name: deploy-to-kind
 
 on:
   push:
-    branches: [ "main", "part3-deploy-to-kind" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "part3-deployment-kind", "part3-deploy-to-kind" ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
-  build:
-    name: Build and push image
+  deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      image: ${{ steps.set-image.outputs.image }}
+    timeout-minutes: 90
+    env:
+      IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge
+      IMAGE_TAG: ${{ github.sha }}
+      FALLBACK_TAG: latest
+      NAMESPACE: orders
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      # Terraform debug (written to a file, uploaded on failure)
+      TF_LOG: INFO
+      TF_LOG_PATH: ${{ github.workspace }}/terraform-debug.log
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to GHCR
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
-
-      - name: Build and push image
-        id: build-image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:${{ github.sha }}
-
-      - name: Export image name
-        id: set-image
+      - name: Install kubectl & kind
         run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:${{ github.sha }}"
-          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          KUBECTL_VERSION="v1.27.0"
+          curl -fsSL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          KIND_VERSION="v0.20.0"
+          curl -fsSLo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
+          kubectl version --client
+          kind --version
+        shell: bash
 
-  deploy:
-    name: Deploy to cluster (Terraform)
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+      - name: Docker login to GHCR (GHCR_PAT preferred)
+        run: |
+          set -euo pipefail
+          ACTOR="${GITHUB_ACTOR:-${{ github.actor }}}"
+          if [ -n "${GHCR_PAT:-}" ]; then
+            echo "$GHCR_PAT" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          else
+            echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "$ACTOR" --password-stdin || true
+          fi
+        env:
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
 
-    env:
-      NAMESPACE: orders
+      - id: pull-image
+        name: Determine and pull image (commit SHA then fallback)
+        run: |
+          set -euo pipefail
+          REPO="${IMAGE_REPO}"
+          TRY_TAG="${IMAGE_TAG}"
+          FALLBACK="${FALLBACK_TAG}"
+          FULL="${REPO}:${TRY_TAG}"
+          echo "Trying to pull ${FULL}"
+          for i in 1 2 3 4 5; do
+            if docker pull "${FULL}"; then
+              echo "pulled_tag=${TRY_TAG}" >> $GITHUB_OUTPUT
+              echo "full_image=${FULL}" >> $GITHUB_OUTPUT
+              echo "FULL_IMAGE=${FULL}" >> $GITHUB_ENV
+              exit 0
+            fi
+            echo "pull failed for ${FULL}, retry ($i)..."
+            sleep 2
+          done
+          FULL="${REPO}:${FALLBACK}"
+          echo "Trying fallback ${FULL}"
+          for i in 1 2 3 4 5; do
+            if docker pull "${FULL}"; then
+              echo "pulled_tag=${FALLBACK}" >> $GITHUB_OUTPUT
+              echo "full_image=${FULL}" >> $GITHUB_OUTPUT
+              echo "FULL_IMAGE=${FULL}" >> $GITHUB_ENV
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Failed to pull image ${REPO}" >&2
+          exit 1
+        env:
+          IMAGE_REPO: ${{ env.IMAGE_REPO }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          FALLBACK_TAG: ${{ env.FALLBACK_TAG }}
+        shell: bash
 
-    steps:
-      - name: Checkout (repo files for terraform / k8s)
-        uses: actions/checkout@v4
+      - id: setup-cluster
+        name: Use external kubeconfig if reachable, otherwise create kind (explicit kubeconfig)
+        run: |
+          set -euo pipefail
+          KIND_NAME="ci-kind"
+          KIND_CREATED="false"
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+
+          echo "KUBECONFIG=${KUBECONFIG_PATH}" >> $GITHUB_ENV
+          export KUBECONFIG="${KUBECONFIG_PATH}"
+
+          if [ -n "${KUBE_CONFIG_DATA:-}" ]; then
+            echo "Writing provided KUBE_CONFIG_DATA to ${KUBECONFIG_PATH}"
+            echo "${KUBE_CONFIG_DATA}" | base64 --decode > "${KUBECONFIG_PATH}"
+            chmod 600 "${KUBECONFIG_PATH}"
+
+            echo "Testing cluster connectivity using ${KUBECONFIG_PATH}..."
+            if kubectl --kubeconfig "${KUBECONFIG_PATH}" version --client --request-timeout='5s' >/dev/null 2>&1 && \
+               kubectl --kubeconfig "${KUBECONFIG_PATH}" get --raw='/readyz' --request-timeout='5s' >/dev/null 2>&1; then
+              echo "Provided kubeconfig reachable; using it."
+            else
+              echo "Provided kubeconfig present but unreachable; creating local kind cluster and writing kubeconfig to ${KUBECONFIG_PATH}"
+              kind create cluster --name "${KIND_NAME}" --kubeconfig "${KUBECONFIG_PATH}" --wait 120s
+              KIND_CREATED="true"
+            fi
+          else
+            echo "No external kubeconfig provided; creating local kind cluster and writing kubeconfig to ${KUBECONFIG_PATH}"
+            kind create cluster --name "${KIND_NAME}" --kubeconfig "${KUBECONFIG_PATH}" --wait 120s
+            KIND_CREATED="true"
+          fi
+
+          if [ ! -f "${KUBECONFIG_PATH}" ]; then
+            echo "ERROR: kubeconfig ${KUBECONFIG_PATH} missing after setup" >&2
+            ls -la "${GITHUB_WORKSPACE}" || true
+            exit 1
+          fi
+
+          if ! kubectl --kubeconfig "${KUBECONFIG_PATH}" version --request-timeout='10s' >/dev/null 2>&1; then
+            echo "ERROR: cluster API not reachable via ${KUBECONFIG_PATH}" >&2
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" config view || true
+            exit 1
+          fi
+
+          echo "kind_created=${KIND_CREATED}" >> $GITHUB_OUTPUT
+        env:
+          KUBE_CONFIG_DATA: ${{ env.KUBE_CONFIG_DATA }}
+        shell: bash
+
+      - name: Quick cluster debug (nodes + context)
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+          echo "Current context:"
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" config current-context || true
+          echo "Nodes:"
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" get nodes -o wide || true
+        shell: bash
+
+      - name: Load image into kind if cluster created
+        if: ${{ steps.setup-cluster.outputs.kind_created == 'true' }}
+        run: |
+          set -euo pipefail
+          FULL_IMAGE="${{ steps.pull-image.outputs.full_image }}"
+          if [ -z "${FULL_IMAGE:-}" ]; then
+            echo "FULL_IMAGE not found; cannot load into kind" >&2
+            exit 1
+          fi
+          kind load docker-image "${FULL_IMAGE}" --name ci-kind
+        shell: bash
+
+      - name: Ensure namespace exists (explicit kubeconfig)
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" get namespace ${NAMESPACE} >/dev/null 2>&1 || \
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" create namespace ${NAMESPACE}
+        env:
+          NAMESPACE: ${{ env.NAMESPACE }}
+        shell: bash
+
+      - name: Create DB secret (repo secrets override defaults)
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+          DB_NAME="${{ secrets.DB_NAME || 'ordersdb' }}"
+          DB_USER="${{ secrets.DB_USER || 'ordersuser' }}"
+          DB_PASSWORD="${{ secrets.DB_PASSWORD || 'orders-pass' }}"
+          DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@postgres.${NAMESPACE}.svc.cluster.local:5432/${DB_NAME}"
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" create secret generic orders-db-credentials -n ${NAMESPACE} \
+            --from-literal=POSTGRES_DB="${DB_NAME}" \
+            --from-literal=POSTGRES_USER="${DB_USER}" \
+            --from-literal=POSTGRES_PASSWORD="${DB_PASSWORD}" \
+            --from-literal=DATABASE_URL="${DATABASE_URL}" \
+            --dry-run=client -o yaml | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f -
+        env:
+          NAMESPACE: ${{ env.NAMESPACE }}
+        shell: bash
+
+      - name: Create TLS secret (self-signed) if missing
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+          if ! kubectl --kubeconfig "${KUBECONFIG_PATH}" get secret orders-tls -n ${NAMESPACE} >/dev/null 2>&1; then
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+              -subj "/CN=orders.local/O=orders" \
+              -keyout key.pem -out cert.pem
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" create secret tls orders-tls -n ${NAMESPACE} \
+              --cert=cert.pem --key=key.pem --dry-run=client -o yaml | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f -
+            rm -f cert.pem key.pem
+          fi
+        env:
+          NAMESPACE: ${{ env.NAMESPACE }}
+        shell: bash
 
       - name: Install Terraform
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: 1.14.4
 
-      - name: Install kubectl (linux/amd64)
-        run: |
-          set -euo pipefail
-          KUBECTL_VERSION="v1.27.0"
-          OS="linux"
-          ARCH="amd64"
-          URL="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${OS}/${ARCH}/kubectl"
-          echo "Downloading kubectl from ${URL}"
-          curl -fsSL -o kubectl "${URL}"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/kubectl
-          kubectl version --client --short
-
-      - name: Restore kubeconfig from secret
-        run: |
-          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > "${{ github.workspace }}/kubeconfig"
-          chmod 600 "${{ github.workspace }}/kubeconfig"
-          echo "KUBECONFIG=${{ github.workspace }}/kubeconfig" >> $GITHUB_ENV
-        shell: bash
-
-      - name: Verify cluster access
-        run: |
-          if [ -z "${KUBECONFIG:-}" ]; then
-            echo "KUBECONFIG not set. Exiting."
-            exit 1
-          fi
-          kubectl version --short
-          kubectl cluster-info
-        env:
-          KUBECONFIG: ${{ env.KUBECONFIG }}
-
-      - name: Create TLS secret (self-signed) if missing
-        run: |
-          # create a self-signed cert if orders-tls does not exist
-          if ! kubectl get secret orders-tls -n ${NAMESPACE} >/dev/null 2>&1; then
-            echo "Generating self-signed cert for orders.local"
-            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-              -subj "/CN=orders.local/O=orders" \
-              -keyout key.pem -out cert.pem
-            kubectl create secret tls orders-tls -n ${NAMESPACE} --cert=cert.pem --key=key.pem --dry-run=client -o yaml | kubectl apply -f -
-            rm -f cert.pem key.pem
-            echo "Created orders-tls in namespace ${NAMESPACE}"
-          else
-            echo "orders-tls already exists"
-          fi
-        shell: bash
-        env:
-          KUBECONFIG: ${{ env.KUBECONFIG }}
-
-      - name: Create DB secret from GitHub Secrets (safe, no plaintext in repo)
-        run: |
-          # ensure required repo secrets exist (DB_NAME, DB_USER, DB_PASSWORD)
-          if [ -z "${{ secrets.DB_NAME }}${{ secrets.DB_USER }}${{ secrets.DB_PASSWORD }}" ]; then
-            echo "One or more DB secrets (DB_NAME, DB_USER, DB_PASSWORD) are missing. Exiting."
-            exit 1
-          fi
-          kubectl create secret generic orders-db-credentials -n ${NAMESPACE} \
-            --from-literal=POSTGRES_DB="${{ secrets.DB_NAME }}" \
-            --from-literal=POSTGRES_USER="${{ secrets.DB_USER }}" \
-            --from-literal=POSTGRES_PASSWORD="${{ secrets.DB_PASSWORD }}" \
-            --from-literal=DATABASE_URL="postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@postgres.${NAMESPACE}.svc.cluster.local:5432/${{ secrets.DB_NAME }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          echo "Applied orders-db-credentials secret in ${NAMESPACE}"
-        shell: bash
-        env:
-          KUBECONFIG: ${{ env.KUBECONFIG }}
-
       - name: Terraform init
         working-directory: ./terraform
-        run: terraform init
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+          TF_LOG: ${{ env.TF_LOG }}
+          TF_LOG_PATH: ${{ env.TF_LOG_PATH }}
+        run: terraform init -input=false
+        shell: bash
 
-      - name: Terraform apply
+      - name: Terraform apply (deploy manifests)
         working-directory: ./terraform
         env:
           KUBECONFIG: ${{ env.KUBECONFIG }}
+          PULLED_TAG: ${{ steps.pull-image.outputs.pulled_tag }}
+          TF_LOG: ${{ env.TF_LOG }}
+          TF_LOG_PATH: ${{ env.TF_LOG_PATH }}
         run: |
-          terraform apply -auto-approve -var="image_tag=${{ needs.build.outputs.image }}" -var="namespace=${NAMESPACE}"
+          set -euo pipefail
+          terraform apply -auto-approve -var="image_tag=${PULLED_TAG}" -var="namespace=${NAMESPACE}"
+        shell: bash
+
+      - name: Rollout wait - Postgres (explicit, long timeout)
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} rollout status deployment/postgres --timeout=30m
+        env:
+          NAMESPACE: ${{ env.NAMESPACE }}
+        shell: bash
+
+      - name: Rollout wait - Orders app (explicit, long timeout)
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} rollout status deployment/orders-app --timeout=30m
+        env:
+          NAMESPACE: ${{ env.NAMESPACE }}
+        shell: bash
+
+      - name: Show pods/services/ingress
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} get pods,svc,ingress -o wide || true
+        env:
+          NAMESPACE: ${{ env.NAMESPACE }}
+        shell: bash
+
+      - name: Port-forward service and verify endpoints (valid payload, robust)
+        run: |
+          set -euo pipefail
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} port-forward svc/orders 8080:8000 >/tmp/portforward.log 2>&1 &
+          PF_PID=$!
+          echo "port-forward pid=$PF_PID"
+          trap 'echo "Cleaning up"; kill ${PF_PID} || true; sed -n "1,300p" /tmp/portforward.log || true' EXIT
+
+          for i in $(seq 1 30); do
+            if curl -sS -f http://127.0.0.1:8080/health >/dev/null 2>&1; then
+              echo "/health OK"
+              break
+            fi
+            echo "waiting for /health (attempt $i)..."
+            sleep 2
+            if [ "$i" -eq 30 ]; then
+              echo "Service did not become ready; dumping port-forward log:"
+              sed -n '1,300p' /tmp/portforward.log || true
+              kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} get pods -o wide || true
+              kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} logs -l app=orders-app --all-containers=true --tail=200 || true
+              exit 1
+            fi
+          done
+
+          ID="ci-${GITHUB_SHA:0:8}"
+          AMOUNT=42.5
+          echo "Posting order id=${ID}, amount=${AMOUNT}"
+          POST_STATUS=$(curl -s -o /tmp/post_resp -w '%{http_code}' -X POST \
+            -H "Content-Type: application/json" \
+            --data "{\"id\":\"${ID}\",\"amount\":${AMOUNT}}" \
+            http://127.0.0.1:8080/orders || true)
+          echo "POST status: $POST_STATUS"
+          if [ "$POST_STATUS" != "200" ] && [ "$POST_STATUS" != "201" ]; then
+            echo "POST failed, response:"; sed -n '1,300p' /tmp/post_resp || true
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} logs -l app=orders-app --all-containers=true --tail=200 || true
+            exit 1
+          fi
+
+          sleep 1
+          GET_BODY=$(curl -sS http://127.0.0.1:8080/orders || true)
+          echo "GET /orders => $GET_BODY"
+          if ! echo "$GET_BODY" | grep -q "$ID"; then
+            echo "Expected order id $ID not found in GET response"
+            kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} logs -l app=orders-app --all-containers=true --tail=200 || true
+            exit 1
+          fi
+
+          echo "Endpoint verification passed"
+        env:
+          NAMESPACE: ${{ env.NAMESPACE }}
+        shell: bash
+
+      # ---------------------------
+      # DEBUG BUNDLE ON FAILURE
+      # ---------------------------
+      - name: Debug bundle (pods/events/describe/logs) on failure
+        if: ${{ failure() }}
+        run: |
+          set +e
+          mkdir -p debug
+          KUBECONFIG_PATH="${GITHUB_WORKSPACE}/kubeconfig"
+
+          echo "=== kubectl get all ===" | tee debug/01-get-all.txt
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} get all -o wide 2>&1 | tee -a debug/01-get-all.txt
+
+          echo "=== ingress/svc ===" | tee debug/02-ingress-svc.txt
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} get ingress,svc -o yaml 2>&1 | tee -a debug/02-ingress-svc.txt
+
+          echo "=== events ===" | tee debug/03-events.txt
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} get events --sort-by=.metadata.creationTimestamp 2>&1 | tee -a debug/03-events.txt
+
+          echo "=== describe orders-app ===" | tee debug/04-describe-orders-app.txt
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} describe deployment/orders-app 2>&1 | tee -a debug/04-describe-orders-app.txt
+
+          echo "=== describe postgres ===" | tee debug/05-describe-postgres.txt
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} describe deployment/postgres 2>&1 | tee -a debug/05-describe-postgres.txt
+
+          echo "=== orders-app logs ===" | tee debug/06-orders-app-logs.txt
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} logs -l app=orders-app --all-containers=true --tail=400 2>&1 | tee -a debug/06-orders-app-logs.txt
+
+          echo "=== postgres logs ===" | tee debug/07-postgres-logs.txt
+          kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ${NAMESPACE} logs -l app=postgres --all-containers=true --tail=400 2>&1 | tee -a debug/07-postgres-logs.txt
+
+          echo "=== port-forward log ===" | tee debug/08-portforward.log
+          if [ -f /tmp/portforward.log ]; then
+            sed -n '1,500p' /tmp/portforward.log 2>&1 | tee -a debug/08-portforward.log
+          else
+            echo "no /tmp/portforward.log found" | tee -a debug/08-portforward.log
+          fi
+
+          echo "=== terraform debug log ===" | tee debug/09-terraform-debug.log
+          if [ -f "${TF_LOG_PATH}" ]; then
+            sed -n '1,500p' "${TF_LOG_PATH}" 2>&1 | tee -a debug/09-terraform-debug.log
+          else
+            echo "no terraform debug log found at ${TF_LOG_PATH}" | tee -a debug/09-terraform-debug.log
+          fi
+        env:
+          NAMESPACE: ${{ env.NAMESPACE }}
+        shell: bash
+
+      - name: Upload debug artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: part3-debug-bundle
+          path: |
+            debug/**
+            terraform-debug.log
+            /tmp/portforward.log
+          if-no-files-found: ignore
