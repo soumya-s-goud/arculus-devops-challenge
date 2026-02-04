@@ -64,10 +64,18 @@ jobs:
         with:
           terraform_version: 1.14.4
 
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: '1.27.0'
+      - name: Install kubectl (linux/amd64)
+        run: |
+          set -euo pipefail
+          KUBECTL_VERSION="v1.27.0"
+          OS="linux"
+          ARCH="amd64"
+          URL="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${OS}/${ARCH}/kubectl"
+          echo "Downloading kubectl from ${URL}"
+          curl -fsSL -o kubectl "${URL}"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client --short
 
       - name: Restore kubeconfig from secret (if provided)
         run: |
