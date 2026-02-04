@@ -8,6 +8,7 @@ on:
       - 'src/**'
       - 'terraform/**'
       - 'k8s/**'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -68,11 +69,16 @@ jobs:
         with:
           version: '1.27.0'
 
-      - name: Restore kubeconfig from secret
+      - name: Restore kubeconfig from secret (if provided)
         run: |
-          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > "${{ github.workspace }}/kubeconfig"
-          chmod 600 "${{ github.workspace }}/kubeconfig"
-          echo "KUBECONFIG=${{ github.workspace }}/kubeconfig" >> $GITHUB_ENV
+          if [ -z "${{ secrets.KUBE_CONFIG_DATA }}" ]; then
+            echo "KUBE_CONFIG_DATA secret not set; skipping kubeconfig restore"
+          else
+            echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > "${{ github.workspace }}/kubeconfig"
+            chmod 600 "${{ github.workspace }}/kubeconfig"
+            echo "KUBECONFIG=${{ github.workspace }}/kubeconfig" >> $GITHUB_ENV
+            echo "Restored kubeconfig to ${GITHUB_WORKSPACE}/kubeconfig"
+          fi
         shell: bash
 
       - name: Verify cluster access
