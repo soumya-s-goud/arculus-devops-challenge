@@ -33,15 +33,44 @@ This application is the basis for demonstrating:
 
 ```text
 .
-├─ apps/                 # Python Flask app (UI + API)
-├─ tests/                # Unit + integration tests
-├─ k8s/                  # Kubernetes manifests (namespace, DB, app, service, ingress)
-├─ terraform/            # Terraform module wrapping the K8s resources
-├─ .github/workflows/    # CI/CD workflows
-├─ Dockerfile            # Multi-stage, non-root build for Orders API
-├─ requirements.txt      # Python dependencies
-├─ setup.cfg             # Linting / pytest configuration
-└─ README.md             # This file
+├─ apps/                     # Python Flask Orders API + UI
+│  ├─ __init__.py
+│  ├─ main.py                # App entrypoint (Flask app, /health, /orders, UI)
+│  └─ templates/             # HTML templates for orders UI
+│
+├─ tests/                    # Unit + integration tests
+│  ├─ unit/
+│  └─ integration/
+│
+├─ k8s/                      # Kubernetes manifests for Orders stack
+│  ├─ namespace.yaml         # orders namespace
+│  ├─ secret-db.yaml         # DATABASE_URL + DB credentials (K8s Secret)
+│  ├─ postgres-deployment.yaml
+│  ├─ postgres-service.yaml
+│  ├─ app-deployment.yaml    # Orders app Deployment (uses GHCR image)
+│  ├─ app-service.yaml       # Orders app Service (ClusterIP)
+│  └─ ingress.yaml           # Ingress with TLS for orders.local
+│
+├─ terraform/                # Terraform module wrapping K8s manifests
+│  ├─ main.tf                # Uses gavinbunney/kubectl to apply namespace/secret/DB/svc/ingress
+│  ├─ variables.tf           # image_tag, namespace
+│  ├─ app-deployment.tpl     # Templated app Deployment (reference)
+│  └─ .terraform.lock.hcl    # Provider lock (gavinbunney/kubectl)
+│
+├─ .github/
+│  └─ workflows/             # GitHub Actions CI/CD workflows
+│     ├─ ci.yml              # Build & test, coverage, .deb packaging
+│     ├─ docker-ci.yml       # Docker build & push to GHCR
+│     ├─ deploy-to-kind.yml  # CD to kind using raw manifests + smoke test
+│     ├─ deploy-with-terraform.yml # CD to kind using Terraform + kubectl app deploy
+│     └─ monitoring.yml      # Deploy app + kube-prometheus-stack (Prometheus + Grafana)
+│
+├─ Dockerfile                # Multi-stage, non-root image for Orders API
+├─ requirements.txt          # Python dependencies
+├─ setup.cfg                 # Linting / pytest / tooling config
+├─ .gitignore
+├─ .dockerignore
+└─ README.md                 # Challenge description, setup, demo instructions
 ```
 
 Key directories:
