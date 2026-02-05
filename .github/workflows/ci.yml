@@ -11,6 +11,7 @@ on:
       - "main"
       - "part*"
       - "feature/**"
+  workflow_dispatch:
 
 jobs:
   build-and-test-deb:
@@ -75,34 +76,56 @@ jobs:
           echo "Testing direct connection..."
           PGPASSWORD="$DB_PASSWORD" psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT version();"
 
-      - name: Initialize database and start Flask app
+      - name: Initialize database and start orders app
         run: |
           set -euo pipefail
-          echo "Starting Flask application to initialize database..."
-          # Safe with set -u
+          export PYTHONUNBUFFERED=1
+          echo "Starting orders application to initialize database..."
           export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
 
-          # Start Flask app in background
-          nohup python apps/main.py > flask_app.log 2>&1 &
-          FLASK_PID=$!
-          echo "Flask app started with PID: $FLASK_PID"
+          # Start orders app in background, unbuffered, capture logs
+          nohup python -u apps/main.py > orders_app.log 2>&1 &
+          ORDERS_APP_PID=$!
+          echo "Orders app started with PID: $ORDERS_APP_PID"
 
-          # Wait for Flask to be ready
-          echo "Waiting for Flask app to be ready..."
+          # Give the server a moment and print initial logs for quick feedback
+          sleep 3
+          echo "=== orders_app.log (head) ==="
+          head -n 200 orders_app.log || true
+
+          # Wait for orders app to be ready (health endpoint)
+          echo "Waiting for orders app to be ready..."
+          READY=0
           for i in {1..30}; do
-            if curl -s http://localhost:5000/health > /dev/null; then
-              echo "Flask app is ready!"
+            if curl -sS http://127.0.0.1:5000/health >/dev/null 2>&1; then
+              echo "Orders app is ready!"
+              READY=1
               break
             fi
-            echo "Waiting for Flask... ($i/30)"
+            echo "Waiting for orders app... ($i/30)"
             sleep 2
           done
 
-          # Verify Flask is running
-          curl -v http://localhost:5000/health || (echo "Flask health check failed" && cat flask_app.log && exit 1)
+          if [ "$READY" -ne 1 ]; then
+            echo "ERROR: Orders app did not become ready in time. Dumping orders_app.log:"
+            tail -n 400 orders_app.log || true
+            exit 1
+          fi
 
-          # Keep Flask PID for later
-          echo $FLASK_PID > flask.pid
+          # Verify orders app is running
+          curl -v http://127.0.0.1:5000/health || (echo "Orders app health check failed" && tail -n 400 orders_app.log && exit 1)
+
+          echo "Checking /orders (integration test)..."
+          # GET /orders should respond 200
+          curl -v http://127.0.0.1:5000/orders || (echo "/orders check failed" && tail -n 400 orders_app.log && exit 1)
+          # Optional: POST an order and then GET again to verify persistence
+          curl -X POST -H "Content-Type: application/json" \
+               -d '{"id": "ci-test-1", "amount": 123.45}' \
+               http://127.0.0.1:5000/orders || (echo "POST /orders failed" && tail -n 400 orders_app.log && exit 1)
+          curl -v http://127.0.0.1:5000/orders || (echo "GET /orders after POST failed" && tail -n 400 orders_app.log && exit 1)
+
+          # Keep orders app PID for later
+          echo $ORDERS_APP_PID > orders_app.pid
 
       - name: Run tests with coverage (generate htmlcov)
         run: |
@@ -137,15 +160,28 @@ jobs:
           path: coverage-html.zip
           retention-days: 30
 
-      - name: Stop Flask app
+      - name: Collect orders app logs (always)
         if: always()
         run: |
-          if [ -f flask.pid ]; then
-            FLASK_PID=$(cat flask.pid)
-            echo "Stopping Flask app (PID: $FLASK_PID)..."
-            kill "$FLASK_PID" || true
-            echo "Flask app logs:"
-            cat flask_app.log || true
+          echo "=== Final orders_app.log (tail) ==="
+          tail -n 400 orders_app.log || true
+
+      - name: Upload orders app log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orders_app_log_${{ github.run_id }}
+          path: orders_app.log
+
+      - name: Stop orders app
+        if: always()
+        run: |
+          if [ -f orders_app.pid ]; then
+            ORDERS_APP_PID=$(cat orders_app.pid)
+            echo "Stopping Orders app (PID: $ORDERS_APP_PID)..."
+            kill "$ORDERS_APP_PID" || true
+            echo "Orders app logs:"
+            cat orders_app.log || true
           fi
 
       - name: Install packaging and systemd tools
@@ -161,7 +197,7 @@ jobs:
 
           cat > debian_package/etc/systemd/system/arculus.service << 'EOF'
           [Unit]
-          Description=Arculus Flask Application
+          Description=Arculus orders Application
           After=network.target
 
           [Service]
@@ -183,7 +219,7 @@ jobs:
           Priority: optional
           Architecture: all
           Maintainer: Your Name <your.email@example.com>
-          Description: Flask app with /health and /orders endpoints
+          Description: Orders app with /health and /orders endpoints
           EOF
 
           dpkg-deb --build debian_package
@@ -209,3 +245,23 @@ jobs:
         with:
           name: arculus.deb
           path: debian_package.deb
+      
+  validate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -L https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate Kubernetes manifests with kubeconform
+        run: |
+          set -euo pipefail
+          kubeconform -strict -ignore-missing-schemas \
+            -summary \
+            -schema-location default \
+            k8s/*.yaml

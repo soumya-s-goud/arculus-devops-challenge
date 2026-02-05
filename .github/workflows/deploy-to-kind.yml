@@ -129,3 +129,22 @@ jobs:
           kubectl run curl -n orders --image=busybox:1.36 --restart=Never -- \
             sh -c 'for i in $(seq 1 30); do echo "Attempt $i: GET /health"; wget -qO- http://orders:8000/health && exit 0; sleep 2; done; echo "Health check failed"; exit 1'
           kubectl delete pod curl -n orders --ignore-not-found=true
+      
+      - name: Collect cluster logs
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          kubectl get pods -A -o wide > artifacts/pods.txt
+          kubectl get svc -A > artifacts/services.txt
+          kubectl describe deploy -n orders > artifacts/orders-deploy.txt || true
+          kubectl logs -n orders -l app=orders-app > artifacts/orders-app-logs.txt || true
+          kubectl logs -n orders -l app=postgres > artifacts/postgres-logs.txt || true
+
+      - name: Upload cluster logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-to-kind-logs
+          path: artifacts
+          retention-days: 7
