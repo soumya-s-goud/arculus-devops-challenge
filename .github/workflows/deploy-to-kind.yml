@@ -95,6 +95,25 @@ jobs:
             echo "KUBECONFIG not set. Exiting."
             exit 1
           fi
+          # Verify KUBECONFIG file exists
+          if [ ! -f "${KUBECONFIG}" ]; then
+            echo "KUBECONFIG file does not exist: ${KUBECONFIG}"
+          exit 1
+          fi
+          
+          # Display KUBECONFIG contents for debugging (optional, remove in production)
+          echo "KUBECONFIG is set to: ${KUBECONFIG}"
+
+          # Check if cluster is accessible before running commands
+          if ! kubectl cluster-info &>/dev/null; then
+            echo "ERROR: Cannot connect to Kubernetes cluster"
+            echo "Please ensure:"
+            echo "  1. The cluster is running"
+            echo "  2. KUBECONFIG points to a valid configuration"
+            echo "  3. The cluster endpoint is accessible"
+            exit 1
+          fi
+          
           kubectl version --short
           kubectl cluster-info
         env:
