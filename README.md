@@ -75,6 +75,7 @@ The app, database, and ingress sit in the `orders` namespace and are deployed to
 .
 ├─ apps/                     # Python Flask Orders API + UI
 │  ├─ __init__.py
+
 │  ├─ main.py                # App entrypoint (/health, /orders, UI)
 │  └─ templates/             # HTML templates for orders UI
 │
