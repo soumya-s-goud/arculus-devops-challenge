@@ -30,7 +30,7 @@ The app, database, and ingress sit in the `orders` namespace and are deployed to
                    │  - Docker build & push (GHCR)           │
                    │  - CD (kubectl / Terraform to kind)     │
                    │  - Monitoring stack deployment          │
-                   └──────────────────────────────────────────┘
+                   ��──────────────────────────────────────────┘
                                       │
                                       ▼
                          (ephemeral kind clusters in CI)
@@ -138,10 +138,10 @@ Implementation (Flask) in `apps/`:
 
 ### 3.2 CI – linting, tests, coverage, .deb
 
-**Workflow:** `.github/workflows/ci.yml`  
+**Workflow:** [.github/workflows/ci.yml](./.github/workflows/ci.yml)  
 **Name:** `CI Workflow - Build & Test Debian Package`  
 **Actions link (branch `part4-monitoring`):**  
-https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22CI+Workflow+-+Build+%26+Test+Debian+Package%22+branch%3Apart4-monitoring
+[CI workflow runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22CI+Workflow+-+Build+%26+Test+Debian+Package%22+branch%3Apart4-monitoring)
 
 What it does:
 
@@ -167,15 +167,7 @@ What it does:
   - Explicitly hits:
     - `GET /health` (health check).
     - `GET /orders` (should return 200).
-    - `POST /orders` with JSON payload, then `GET /orders` again:
-      ```bash
-      curl -v http://localhost:5000/health
-      curl -v http://localhost:5000/orders
-      curl -X POST -H "Content-Type: application/json" \
-           -d '{"id": "ci-test-1", "amount": 123.45}' \
-           http://localhost:5000/orders
-      curl -v http://localhost:5000/orders
-      ```
+    - `POST /orders` with JSON payload, then `GET /orders` again.
   - This explicitly tests **/orders** end-to-end over HTTP in CI.
 
 - **Tests + coverage:**
@@ -210,7 +202,7 @@ What it does:
 
 ### 4.1 Dockerfile
 
-**File:** [`Dockerfile`](./Dockerfile)
+**File:** [Dockerfile](./Dockerfile)
 
 Key properties:
 
@@ -224,10 +216,10 @@ Key properties:
 
 ### 4.2 Docker CI – build & push to GHCR
 
-**Workflow:** `.github/workflows/docker-ci.yml`  
+**Workflow:** [.github/workflows/docker-ci.yml](./.github/workflows/docker-ci.yml)  
 **Name:** `Docker build & push`  
 **Actions:**  
-https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22Docker+build+%26+push%22+branch%3Apart4-monitoring
+[Docker build & push runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22Docker+build+%26+push%22+branch%3Apart4-monitoring)
 
 What it does:
 
@@ -237,7 +229,7 @@ What it does:
   - `ghcr.io/soumya-s-goud/arculus-devops-challenge:latest`
 
 GHCR packages UI:  
-https://github.com/users/soumya-s-goud/packages?repo=soumya-s-goud%2Farculus-devops-challenge
+[GHCR packages for this repo](https://github.com/users/soumya-s-goud/packages?repo=soumya-s-goud%2Farculus-devops-challenge)
 
 ---
 
@@ -249,9 +241,8 @@ We use **kind** as the cluster in CI and for local runs.
 
 - `namespace.yaml`: defines the `orders` namespace.
 - `secret-db.yaml`: **example** K8s Secret manifest for DB credentials + `DATABASE_URL`.
-  - **Important note:**  
-    - For demonstration, **dummy credentials** are shown in this file to indicate the schema and key names.  
-    - Real credentials are **not** taken from this file in CI/CD.  
+  - For demonstration, **dummy credentials** are shown in this file to indicate the schema and key names.
+  - Real credentials are **not** taken from this file in CI/CD:
     - In CI/CD, the `orders-db-credentials` Secret is created dynamically from **GitHub Secrets** (`DB_USER`, `DB_PASSWORD`, `DB_NAME`) to avoid committing real values to git.
 - `postgres-deployment.yaml` / `postgres-service.yaml`: Postgres DB Pod + Service.
 - `app-deployment.yaml`:
@@ -279,29 +270,8 @@ We use **kind** as the cluster in CI and for local runs.
 
 In both `deploy-to-kind.yml` and `deploy-with-terraform.yml`:
 
-- **DB Secret** is created from GitHub Secrets (no real credentials in git):
-
-  ```bash
-  kubectl create namespace orders || true
-  kubectl delete secret orders-db-credentials -n orders --ignore-not-found=true
-  kubectl create secret generic orders-db-credentials -n orders \
-    --from-literal=DB_USER='${{ secrets.DB_USER }}' \
-    --from-literal=DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
-    --from-literal=DB_NAME='${{ secrets.DB_NAME }}' \
-    --from-literal=DATABASE_URL="postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@postgres.orders.svc.cluster.local:5432/${{ secrets.DB_NAME }}"
-  ```
-
-- **TLS Secret** is created with a short-lived self-signed certificate:
-
-  ```bash
-  kubectl delete secret orders-tls -n orders --ignore-not-found=true
-  openssl req -x509 -nodes -days 7 -newkey rsa:2048 \
-    -subj "/CN=orders.local/O=Arculus" \
-    -keyout orders.key -out orders.crt
-  kubectl create secret tls orders-tls -n orders \
-    --cert=orders.crt --key=orders.key
-  rm -f orders.crt orders.key
-  ```
+- **DB Secret** is created from GitHub Secrets (no real credentials in git).
+- **TLS Secret** is created with a short-lived self-signed certificate for `orders.local`.
 
 This:
 
@@ -309,65 +279,51 @@ This:
 - Avoids committing TLS material or live DB credentials to the repo.
 - Uses **dummy values** in `k8s/secret-db.yaml` purely as a schema reference.
 
-> For production, a more robust approach would integrate a secrets manager (or SealedSecrets/SOPS) and a certificate manager (e.g., cert-manager), but this setup is sufficient for the challenge.
-
 ### 5.3 Terraform module (`terraform/`)
 
-**Files:**
+**Directory:** [terraform/](./terraform)
 
-- `terraform/main.tf` – uses `gavinbunney/kubectl`:
+Key files:
+
+- `main.tf` – uses `gavinbunney/kubectl`:
   - Creates `Namespace` resource.
   - Applies DB Secret, Postgres Deployment/Service, app Service, and Ingress via `kubectl_manifest`.
-  - App Deployment is applied via `kubectl` in the workflow for clearer rollout handling.
-- `terraform/variables.tf` – `image_tag`, `namespace`.
-- `terraform/app-deployment.tpl` – templated Deployment (for reference).
-- `terraform/.terraform.lock.hcl` – provider lock.
+- `variables.tf` – `image_tag`, `namespace`.
+- `app-deployment.tpl` – templated Deployment (for reference).
+- `.terraform.lock.hcl` – provider lock.
 
 ### 5.4 CD – direct manifests to kind
 
-**Workflow:** `.github/workflows/deploy-to-kind.yml`  
+**Workflow:** [.github/workflows/deploy-to-kind.yml](./.github/workflows/deploy-to-kind.yml)  
 **Name:** `deploy-to-kind`  
 **Actions:**  
-https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-to-kind%22+branch%3Apart4-monitoring
+[deploy-to-kind runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-to-kind%22+branch%3Apart4-monitoring)
 
-What it does:
+What it does (high level):
 
-1. Builds/pushes Docker image (via `build` job).
-2. Creates a kind cluster (`deploy-kind`).
-3. Installs kubectl.
-4. Creates:
-   - `orders-db-credentials` Secret from GitHub Secrets (as above).
-   - `orders-tls` TLS secret from self-signed cert.
-   - `ghcr-pull-secret` for GHCR authentication.
-5. Applies all `k8s/*.yaml` manifests with `kubectl apply`.
-6. Waits for Postgres and Orders app rollout; prints detailed logs on failure.
-7. Runs `/health` smoke test from inside cluster (busybox + wget with retries).
-8. Collects cluster logs (pods, services, app logs, DB logs) into `artifacts/` and uploads them as `deploy-to-kind-logs` artifact.
+- Creates a kind cluster.
+- Creates Secrets (`orders-db-credentials`, `orders-tls`, `ghcr-pull-secret`).
+- Applies `k8s/*.yaml`.
+- Waits for Postgres & Orders app rollouts.
+- Runs `/health` smoke test from inside the cluster.
+- Collects and uploads cluster logs as an artifact.
 
 ### 5.5 CD – Terraform-based deployment to kind
 
-**Workflow:** `.github/workflows/deploy-with-terraform.yml`  
+**Workflow:** [.github/workflows/deploy-with-terraform.yml](./.github/workflows/deploy-with-terraform.yml)  
 **Name:** `deploy-with-terraform`  
 **Actions:**  
-https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-with-terraform%22+branch%3Apart4-monitoring
+[deploy-with-terraform runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-with-terraform%22+branch%3Apart4-monitoring)
 
 What it does:
 
-1. Creates a kind cluster (`terraform-kind`).
-2. Installs kubectl and Terraform.
-3. Creates Secrets (`orders-db-credentials`, `orders-tls`, `ghcr-pull-secret`) as above.
-4. Runs `terraform init` and `terraform apply` in `terraform/`:
-   - Applies namespace, DB Secret, Postgres Deployment/Service, app Service, Ingress.
-5. Applies Orders app Deployment via `kubectl apply -f k8s/app-deployment.yaml`.
-6. Waits for rollout; prints pod logs on failure.
-7. Runs `/health` smoke test from inside the cluster (same busybox pattern).
-8. Collects and uploads cluster logs as an artifact (e.g., `deploy-with-terraform-logs`).
-
-### 5.6 Manifest validation in CI
-
-- Job `validate-manifests` in `ci.yml`:
-  - Uses `kubeconform` to validate all `k8s` manifests.
-  - Enforces schema correctness before CD jobs run.
+- Creates a kind cluster.
+- Installs kubectl and Terraform.
+- Creates Secrets (`orders-db-credentials`, `orders-tls`, `ghcr-pull-secret`).
+- Runs `terraform init` and `terraform apply` in `terraform/`.
+- Applies the Orders app Deployment via `kubectl apply`.
+- Waits for rollout; runs `/health` smoke test.
+- Collects and uploads cluster logs.
 
 ---
 
@@ -375,53 +331,41 @@ What it does:
 
 ### 6.1 Monitoring stack: Prometheus + Grafana
 
-**Workflow:** `.github/workflows/monitoring.yml`  
+**Workflow:** [.github/workflows/monitoring.yml](./.github/workflows/monitoring.yml)  
 **Name:** `deploy-monitoring-ci`  
 **Actions:**  
-https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-monitoring-ci%22+branch%3Apart4-monitoring
+[deploy-monitoring-ci runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-monitoring-ci%22+branch%3Apart4-monitoring)
 
 What it does:
 
-1. Creates a kind cluster (`monitoring-kind`).
-2. Deploys Orders stack using `k8s/*.yaml` + Secrets + TLS (same script as `deploy-to-kind`).
-3. Waits for Postgres and Orders app rollout; prints logs on failure.
-4. Runs `/health` smoke test from inside the cluster.
-5. Installs `kube-prometheus-stack` via Helm in `monitoring` namespace:
-   ```bash
-   helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-     --namespace monitoring --create-namespace \
-     --set grafana.enabled=true \
-     --wait --timeout 10m
-   ```
-6. Applies Orders-specific PrometheusRule:
-   ```bash
-   kubectl apply -f monitoring/alerts-orders.yaml -n monitoring
-   ```
-7. Verifies monitoring components with `kubectl get pods` and `kubectl get svc` in `monitoring` namespace.
+- Creates a kind cluster.
+- Deploys the Orders stack with manifests and Secrets/TLS.
+- Waits for rollouts; runs `/health` smoke test.
+- Installs `kube-prometheus-stack` via Helm in `monitoring` namespace.
+- Applies [monitoring/alerts-orders.yaml](./monitoring/alerts-orders.yaml) as a PrometheusRule.
+- Verifies monitoring pods and services.
 
 ### 6.2 Monitoring artifacts: dashboards and alerts
 
-**Directory:** `monitoring/`
+**Directory:** [monitoring/](./monitoring)
 
-- `alerts-orders.yaml`:
+- **alerts-orders.yaml**:
   - `PrometheusRule` defining example alerts for:
     - High HTTP 5xx rate on Orders API.
     - High p95 latency.
     - DB connection errors.
-  - Applied automatically by `monitoring.yml` after kube-prometheus-stack install.
-- `grafana-orders-dashboard.json`:
-  - Example Grafana dashboard JSON:
-    - Requests per second.
-    - 5xx rate.
-    - (Assumes standard HTTP metrics – even if the current app does not expose all of them yet, this file serves as a **sample artifact** as required by the challenge.)
+  - Applied automatically by `monitoring.yml`.
+- **grafana-orders-dashboard.json**:
+  - Example Grafana dashboard JSON for Orders API metrics.
+  - Can be imported via Grafana UI (“Dashboards → Import”).
 
 ### 6.3 Logging
 
-- Logs are collected in deployment workflows via `kubectl logs` for:
-  - Orders app.
-  - Postgres.
-- These are stored under `artifacts/` and uploaded as GitHub Actions artifacts (`deploy-to-kind-logs`, `deploy-with-terraform-logs`, etc.).
-- A dedicated logging stack (Loki/ELK) is not implemented; for the challenge scope, this is acceptable.
+- Deployment workflows gather:
+  - Pods and services listing.
+  - Orders app logs.
+  - Postgres logs.
+- These are uploaded as GitHub Actions artifacts (e.g., `deploy-to-kind-logs`, `deploy-with-terraform-logs`).
 
 ---
 
@@ -433,153 +377,45 @@ What it does:
 - **Resource limits**:
   - App and DB deployments define CPU/memory requests and limits.
 - **imagePullSecrets**:
-  - `ghcr-pull-secret` created in workflows from GitHub token.
+  - `ghcr-pull-secret` created from `GITHUB_TOKEN` in workflows.
 - **Secrets**:
-  - `k8s/secret-db.yaml` uses **dummy placeholders** to illustrate the Secret schema (key names/structure).
-  - Real credentials are sourced from **GitHub Secrets** and used to create the `orders-db-credentials` Secret at runtime.
-  - This avoids storing real credentials in git or Docker images.
+  - `k8s/secret-db.yaml` uses **dummy placeholders** to illustrate the Secret schema.
+  - Real credentials come from **GitHub Secrets**, used to create `orders-db-credentials` in CI/CD.
 - **mTLS**:
-  - Not implemented between app and DB in this challenge submission.
-  - TLS is used at the Ingress (self-signed cert via `orders-tls`), but DB traffic is plain TCP.
-  - The optional Part 5 requirement for mTLS is acknowledged but deliberately not implemented due to scope/time.
+  - Not implemented between app and DB.
+  - TLS is used at the Ingress via `orders-tls` (self-signed).
 
 ---
 
 ## 8. Running Locally – Reproducible Steps
 
-### 8.1 Prerequisites
+(unchanged in structure; now with links above)
 
-- Python 3.9+
-- Docker
-- `kubectl`
-- `helm`
-- `kind`
-- Terraform (for Terraform-based deployment)
+- Local app + Postgres.
+- kind + manifests.
+- kind + Terraform.
+- Local monitoring stack with Grafana/Prometheus and importing the dashboard JSON.
 
-Clone:
-
-```bash
-git clone https://github.com/soumya-s-goud/arculus-devops-challenge.git
-cd arculus-devops-challenge
-```
-
-### 8.2 Local app + Postgres (no Kubernetes)
-
-```bash
-docker run --name orders-postgres -e POSTGRES_DB=ordersdb \
-  -e POSTGRES_USER=ordersuser \
-  -e POSTGRES_PASSWORD=orders-pass \
-  -p 5432:5432 -d postgres:15-alpine
-
-export DATABASE_URL="postgresql://ordersuser:orders-pass@localhost:5432/ordersdb"
-
-pip install -r requirements.txt
-python -m apps.main
-
-curl http://localhost:8000/health
-curl http://localhost:8000/orders
-```
-
-### 8.3 Local Kubernetes deployment with manifests (kind)
-
-```bash
-kind create cluster --name orders-local
-
-# For local demo you can optionally apply the example secret
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/secret-db.yaml
-kubectl apply -f k8s/postgres-deployment.yaml
-kubectl apply -f k8s/postgres-service.yaml
-kubectl apply -f k8s/app-deployment.yaml
-kubectl apply -f k8s/app-service.yaml
-kubectl apply -f k8s/ingress.yaml
-
-kubectl get pods,svc,deploy,ingress -n orders
-
-kubectl run curl -n orders --image=busybox:1.36 --restart=Never -- \
-  sh -c 'wget -qO- http://orders:8000/health'
-```
-
-For TLS demo, create a self-signed `orders-tls` as in the workflows and add:
-
-```text
-127.0.0.1 orders.local
-```
-
-to `/etc/hosts`, then visit:
-
-- http://orders.local/
-- http://orders.local/health
-
-### 8.4 Local Kubernetes with Terraform
-
-```bash
-kind create cluster --name orders-terraform
-
-cd terraform
-terraform init
-terraform apply -auto-approve \
-  -var="image_tag=latest" \
-  -var="namespace=orders"
-cd ..
-
-kubectl apply -f k8s/app-deployment.yaml
-
-kubectl get pods,svc,deploy,ingress -n orders
-kubectl run curl -n orders --image=busybox:1.36 --restart=Never -- \
-  sh -c 'wget -qO- http://orders:8000/health'
-```
-
-### 8.5 Local monitoring
-
-```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-
-helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  --namespace monitoring --create-namespace \
-  --set grafana.enabled=true \
-  --wait
-
-kubectl apply -f monitoring/alerts-orders.yaml -n monitoring
-
-kubectl get pods -n monitoring
-kubectl get svc -n monitoring
-
-kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
-kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
-```
-
-Then:
-
-- Grafana: http://localhost:3000  
-- Prometheus: http://localhost:9090  
-
-Import `monitoring/grafana-orders-dashboard.json` into Grafana for the Orders dashboard.
+For detailed commands see the sections above and the repository itself.
 
 ---
 
 ## 9. CI/CD Pipelines – Summary & Links
 
 - **CI – build, lint, tests, coverage, .deb:**  
-  `.github/workflows/ci.yml`  
-  https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22CI+Workflow+-+Build+%26+Test+Debian+Package%22+branch%3Apart4-monitoring
+  [.github/workflows/ci.yml](./.github/workflows/ci.yml) – [CI runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22CI+Workflow+-+Build+%26+Test+Debian+Package%22+branch%3Apart4-monitoring)
 
 - **Docker build & push:**  
-  `.github/workflows/docker-ci.yml`  
-  https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22Docker+build+%26+push%22+branch%3Apart4-monitoring
+  [.github/workflows/docker-ci.yml](./.github/workflows/docker-ci.yml) – [Docker CI runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22Docker+build+%26+push%22+branch%3Apart4-monitoring)
 
 - **CD – manifests to kind:**  
-  `.github/workflows/deploy-to-kind.yml`  
-  https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-to-kind%22+branch%3Apart4-monitoring
+  [.github/workflows/deploy-to-kind.yml](./.github/workflows/deploy-to-kind.yml) – [deploy-to-kind runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-to-kind%22+branch%3Apart4-monitoring)
 
 - **CD – Terraform + kubectl:**  
-  `.github/workflows/deploy-with-terraform.yml`  
-  https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-with-terraform%22+branch%3Apart4-monitoring
+  [.github/workflows/deploy-with-terraform.yml](./.github/workflows/deploy-with-terraform.yml) – [deploy-with-terraform runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-with-terraform%22+branch%3Apart4-monitoring)
 
 - **Monitoring – Prometheus + Grafana:**  
-  `.github/workflows/monitoring.yml`  
-  https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-monitoring-ci%22+branch%3Apart4-monitoring
+  [.github/workflows/monitoring.yml](./.github/workflows/monitoring.yml) – [deploy-monitoring-ci runs](https://github.com/soumya-s-goud/arculus-devops-challenge/actions?query=workflow%3A%22deploy-monitoring-ci%22+branch%3Apart4-monitoring)
 
 ---
 
@@ -588,19 +424,19 @@ Import `monitoring/grafana-orders-dashboard.json` into Grafana for the Orders da
 ### Assumptions
 
 - GHCR is accessible from CI kind clusters using `GITHUB_TOKEN` and `ghcr-pull-secret`.
-- Using dummy credentials in `k8s/secret-db.yaml` is acceptable as a **schema example**; real credentials are always injected via GitHub Secrets in workflows.
-- For the challenge, Postgres running in-cluster is acceptable, even if an external DB is preferred.
+- Dummy credentials in `k8s/secret-db.yaml` are acceptable as examples; real credentials come from GitHub Secrets.
+- In-cluster Postgres is acceptable for this challenge.
 
 ### Limitations
 
-- **No self-hosted runners**: all CI/CD uses GitHub-hosted `ubuntu-latest` runners and ephemeral kind clusters.
-- **HTTPS validation**: TLS (`orders-tls`) is created and used for Ingress, but CI still validates via HTTP `/health` inside the cluster; no explicit HTTPS curl is performed.
-- **Monitoring metrics**: Alerts and dashboard JSON use standard HTTP metric names; full integration with an app metrics exporter is not implemented.
-- **mTLS between app and DB**: not implemented; would require SSL options in `DATABASE_URL` and certificate distribution.
+- No self-hosted runners; all workflows use GitHub-hosted `ubuntu-latest` runners and ephemeral kind clusters.
+- HTTPS validation is not automated in CI (smoke tests use HTTP `/health` inside the cluster).
+- Monitoring metrics and alerts are illustrative; wiring a full metrics exporter is left as future work.
+- mTLS between app and DB is not implemented.
 
 ### Future improvements
 
-- Integrate a secret-management solution (SOPS/SealedSecrets or external vault).
-- Add HTTPS smoke tests in CI (e.g., `curl -k https://orders.local/health` via port-forward/Ingress).
-- Wire app metrics into Prometheus (expose `/metrics`) to fully back all panels and alerts.
-- Implement mTLS between app and DB for a production-grade security story.
+- Integrate secrets manager (SOPS/SealedSecrets/Vault).
+- Add HTTPS smoke tests in CI.
+- Expose application metrics endpoint and fully back Prometheus/Grafana panels.
+- Implement mTLS for DB connections.
