@@ -88,6 +88,9 @@ jobs:
             --set grafana.enabled=true \
             --wait --timeout 10m
 
+          # Apply app-specific PrometheusRule for Orders API alerts
+          kubectl apply -f monitoring/alerts-orders.yaml -n monitoring
+
       - name: Verify monitoring components
         run: |
           kubectl get pods -n monitoring

@@ -1,0 +1,35 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: orders-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: orders-api.rules
+      rules:
+        - alert: OrdersHighErrorRate
+          expr: sum(rate(http_requests_total{job="orders-app", status=~"5.."}[5m])) / sum(rate(http_requests_total{job="orders-app"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High 5xx error rate on Orders API"
+            description: "More than 5% of Orders API requests are failing with 5xx in the last 5 minutes."
+
+        - alert: OrdersHighLatency
+          expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="orders-app"}[5m])) by (le)) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High p95 latency on Orders API"
+            description: "p95 latency of Orders API is greater than 0.5s for 10 minutes."
+
+        - alert: OrdersDBConnectionErrors
+          expr: rate(orders_db_connection_errors_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Orders API is experiencing DB connection errors"
+            description: "Orders API reported DB connection errors in the last 5 minutes."
