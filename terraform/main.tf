@@ -9,7 +9,7 @@ terraform {
 }
 
 provider "kubectl" {
-  # uses default kubeconfig (~/.kube/config) or KUBECONFIG env var
+  # Uses default kubeconfig (~/.kube/config) or KUBECONFIG env var
 }
 
 locals {
@@ -30,26 +30,26 @@ locals {
   ingress_raw         = file("${path.module}/../k8s/ingress.yaml")
 
   # Replace hardcoded namespace text "namespace: orders" with the chosen namespace variable.
-  secret_db        = replace(local.secret_db_raw, "namespace: orders", "namespace: ${var.namespace}")
-  postgres_deploy  = replace(local.postgres_deploy_raw, "namespace: orders", "namespace: ${var.namespace}")
-  postgres_svc     = replace(local.postgres_svc_raw, "namespace: orders", "namespace: ${var.namespace}")
-  app_service      = replace(local.app_service_raw, "namespace: orders", "namespace: ${var.namespace}")
-  ingress          = replace(local.ingress_raw, "namespace: orders", "namespace: ${var.namespace}")
+  secret_db       = replace(local.secret_db_raw, "namespace: orders", "namespace: ${var.namespace}")
+  postgres_deploy = replace(local.postgres_deploy_raw, "namespace: orders", "namespace: ${var.namespace}")
+  postgres_svc    = replace(local.postgres_svc_raw, "namespace: orders", "namespace: ${var.namespace}")
+  app_service     = replace(local.app_service_raw, "namespace: orders", "namespace: ${var.namespace}")
+  ingress         = replace(local.ingress_raw, "namespace: orders", "namespace: ${var.namespace}")
 
   # Render the app deployment from the template so we can substitute image_tag and namespace
+  # NOTE: We keep this for reference but do not include it in manifests to apply.
   app_deploy = templatefile("${path.module}/app-deployment.tpl", {
     image_tag = var.image_tag
     namespace = var.namespace
   })
 
-  # Manifests to apply after namespace exists
+  # Manifests to apply after namespace exists (EXCLUDING app-deployment)
   manifests = {
-    "orders-db-secret" = local.secret_db
-    "postgres-deployment" = local.postgres_deploy
-    "postgres-service" = local.postgres_svc
-    "app-deployment" = local.app_deploy
-    "app-service" = local.app_service
-    "ingress" = local.ingress
+    "orders-db-secret"     = local.secret_db
+    "postgres-deployment"  = local.postgres_deploy
+    "postgres-service"     = local.postgres_svc
+    "app-service"          = local.app_service
+    "ingress"              = local.ingress
   }
 }
 
@@ -60,7 +60,7 @@ resource "kubectl_manifest" "namespace" {
 
 # Apply other manifests (depends on namespace)
 resource "kubectl_manifest" "apply" {
-  for_each = local.manifests
-  yaml_body = each.value
+  for_each   = local.manifests
+  yaml_body  = each.value
   depends_on = [kubectl_manifest.namespace]
 }

@@ -1,0 +1,40 @@
+# Minimal values for kube-prometheus-stack to reduce resource usage for CI/kind.
+prometheus:
+  prometheusSpec:
+    replicas: 1
+    evaluationInterval: "30s"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+
+grafana:
+  enabled: true
+  adminPassword: "admin"
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+alertmanager:
+  alertmanagerSpec:
+    replicas: 1
+
+prometheusOperator:
+  tlsProxy: false
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+
+kubeStateMetrics:
+  enabled: false
+
+nodeExporter:
+  enabled: false

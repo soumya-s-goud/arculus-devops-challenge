@@ -15,10 +15,6 @@ spec:
       labels:
         app: orders-app
     spec:
-      # ✅ Fix for GHCR 401: use a docker-registry secret for pulling the image
-      imagePullSecrets:
-        - name: ghcr-pull-secret
-
       containers:
         - name: orders
           image: ghcr.io/soumya-s-goud/arculus-devops-challenge:${image_tag}

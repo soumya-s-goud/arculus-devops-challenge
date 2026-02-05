@@ -3,16 +3,19 @@ name: CI Workflow - Build & Test Debian Package
 on:
   push:
     branches:
-      - "**"
+      - "main"
+      - "part*"
+      - "feature/**"
   pull_request:
     branches:
-      - "**"
+      - "main"
+      - "part*"
+      - "feature/**"
 
 jobs:
   build-and-test-deb:
     runs-on: ubuntu-latest
 
-   # Add PostgreSQL service
     services:
       postgres:
         image: postgres:15
@@ -37,173 +40,168 @@ jobs:
       DB_NAME: ${{ secrets.DB_NAME }}
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest pytest-cov
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
 
-    - name: Verify PostgreSQL connection
-      run: |
-        echo "Waiting for PostgreSQL to be ready..."
-        for i in {1..30}; do
-          if pg_isready -h 127.0.0.1 -p 5432 -U ${{ secrets.DB_USER }}; then
-            echo "PostgreSQL is ready!"
-            break
+      - name: Verify PostgreSQL connection
+        run: |
+          echo "Waiting for PostgreSQL to be ready..."
+          for i in {1..30}; do
+            if pg_isready -h 127.0.0.1 -p 5432 -U "$DB_USER"; then
+              echo "PostgreSQL is ready!"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+          echo "Testing direct connection..."
+          PGPASSWORD="$DB_PASSWORD" psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -c "SELECT version();"
+
+      - name: Initialize database and start Flask app
+        run: |
+          set -euo pipefail
+          echo "Starting Flask application to initialize database..."
+          # Safe with set -u
+          export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
+
+          # Start Flask app in background
+          nohup python apps/main.py > flask_app.log 2>&1 &
+          FLASK_PID=$!
+          echo "Flask app started with PID: $FLASK_PID"
+
+          # Wait for Flask to be ready
+          echo "Waiting for Flask app to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:5000/health > /dev/null; then
+              echo "Flask app is ready!"
+              break
+            fi
+            echo "Waiting for Flask... ($i/30)"
+            sleep 2
+          done
+
+          # Verify Flask is running
+          curl -v http://localhost:5000/health || (echo "Flask health check failed" && cat flask_app.log && exit 1)
+
+          # Keep Flask PID for later
+          echo $FLASK_PID > flask.pid
+
+      - name: Run tests with coverage (generate htmlcov)
+        run: |
+          export PYTHONPATH="${PWD}:${PYTHONPATH:-}"
+          pytest tests/ \
+            --cov=apps \
+            --cov-report=term-missing \
+            --cov-report=html:htmlcov \
+            -v
+
+      - name: Validate htmlcov/index.html exists
+        if: always()
+        run: |
+          if [ -d htmlcov ] && [ -s htmlcov/index.html ]; then
+            echo "htmlcov/index.html exists and is non-empty"
+          else
+            echo "ERROR: htmlcov/index.html is missing or empty. pytest may have failed to generate the report."
+            echo "List htmlcov contents (if any):"
+            ls -la htmlcov || true
+            exit 1
           fi
-          echo "Waiting... ($i/30)"
-          sleep 2
-        done
-        
-        echo "Testing direct connection..."
-        PGPASSWORD=${{ secrets.DB_PASSWORD }} psql -h 127.0.0.1 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -c "SELECT version();"
 
-    - name: Initialize database and start Flask app
-      run: |
-        echo "Starting Flask application to initialize database..."
-        export PYTHONPATH="${PYTHONPATH}:${PWD}"
-        
-        # Start Flask app in background
-        nohup python apps/main.py > flask_app.log 2>&1 &
-        FLASK_PID=$!
-        echo "Flask app started with PID: $FLASK_PID"
-        
-        # Wait for Flask to be ready
-        echo "Waiting for Flask app to be ready..."
-        for i in {1..30}; do
-          if curl -s http://localhost:5000/health > /dev/null; then
-            echo "Flask app is ready!"
-            break
+      - name: Create single zip of htmlcov
+        run: |
+          rm -f coverage-html.zip
+          zip -r coverage-html.zip htmlcov
+
+      - name: Upload coverage HTML zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-zip
+          path: coverage-html.zip
+          retention-days: 30
+
+      - name: Stop Flask app
+        if: always()
+        run: |
+          if [ -f flask.pid ]; then
+            FLASK_PID=$(cat flask.pid)
+            echo "Stopping Flask app (PID: $FLASK_PID)..."
+            kill "$FLASK_PID" || true
+            echo "Flask app logs:"
+            cat flask_app.log || true
           fi
-          echo "Waiting for Flask... ($i/30)"
-          sleep 2
-        done
-        
-        # Verify Flask is running
-        curl -v http://localhost:5000/health || (echo "Flask health check failed" && cat flask_app.log && exit 1)
-        
-        # Keep Flask PID for later
-        echo $FLASK_PID > flask.pid
 
-    - name: Run tests with coverage (generate htmlcov)
-      run: |
-        export PYTHONPATH="${PWD}:${PYTHONPATH}"
-        pytest tests/ \
-          --cov=apps \
-          --cov-report=term-missing \
-          --cov-report=html:htmlcov \
-          -v
+      - name: Install packaging and systemd tools
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev systemd python3 python3-pip
 
-    - name: Validate htmlcov/index.html exists
-      if: always()
-      run: |
-        if [ -d htmlcov ] && [ -s htmlcov/index.html ]; then
-          echo "htmlcov/index.html exists and is non-empty"
-        else
-          echo "ERROR: htmlcov/index.html is missing or empty. pytest may have failed to generate the report."
-          echo "List htmlcov contents (if any):"
-          ls -la htmlcov || true
-          echo "Tail pytest output (last 200 lines) if available:"
-          tail -n 200 /home/runner/work/${{ github.repository }}/pytest-*.log || true
-          exit 1
-        fi
+      - name: Build .deb package
+        run: |
+          set -euo pipefail
 
-    - name: Create single zip of htmlcov
-      run: |
-        rm -f coverage-html.zip
-        zip -r coverage-html.zip htmlcov
+          mkdir -p debian_package/{DEBIAN,opt/arculus,etc/systemd/system}
+          pip install --target=debian_package/opt/arculus -r requirements.txt
+          cp -r apps tests debian_package/opt/arculus/
 
-    - name: Upload coverage HTML zip artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: coverage-html-zip
-        path: coverage-html.zip
-        retention-days: 30
+          cat > debian_package/etc/systemd/system/arculus.service << 'EOF'
+          [Unit]
+          Description=Arculus Flask Application
+          After=network.target
 
-    - name: Add short workflow summary with download hint
-      if: always()
-      run: |
-        {
-          echo "## Coverage HTML report available as artifact: coverage-html-zip"
-          echo ""
-          echo "Download and unzip, then open htmlcov/index.html in your browser."
-          echo ""
-          echo "If links do not render correctly when opened from the filesystem, serve it locally:"
-          echo "  python -m http.server 8000"
-          echo "Then open: http://localhost:8000/htmlcov/"
-        } >> $GITHUB_STEP_SUMMARY
+          [Service]
+          User=www-data
+          Group=www-data
+          WorkingDirectory=/opt/arculus
+          ExecStart=/usr/bin/python3 /opt/arculus/apps/main.py
+          Restart=always
+          RestartSec=5
 
-    - name: Stop Flask app
-      if: always()
-      run: |
-        if [ -f flask.pid ]; then
-          FLASK_PID=$(cat flask.pid)
-          echo "Stopping Flask app (PID: $FLASK_PID)..."
-          kill $FLASK_PID || true
-          echo "Flask app logs:"
-          cat flask_app.log || true
-        fi
+          [Install]
+          WantedBy=multi-user.target
+          EOF
 
-    # Install required tools
-    - name: Install packaging and systemd tools
-      run: sudo apt-get update && sudo apt-get install -y dpkg-dev systemd python3 python3-pip
+          cat > debian_package/DEBIAN/control << 'EOF'
+          Package: arculus
+          Version: 1.0.0
+          Section: base
+          Priority: optional
+          Architecture: all
+          Maintainer: Your Name <your.email@example.com>
+          Description: Flask app with /health and /orders endpoints
+          EOF
 
-    # Build .deb package
-    - name: Build .deb package
-      run: |
-        mkdir -p debian_package/{DEBIAN,opt/arculus,etc/systemd/system}
-        pip install --target=debian_package/opt/arculus -r requirements.txt
-        cp -r apps tests debian_package/opt/arculus/
+          dpkg-deb --build debian_package
 
-        # Create the systemd service file
-        echo -e "[Unit]
-        Description=Arculus Flask Application
-        After=network.target
+      - name: Test .deb package installation
+        run: |
+          sudo dpkg -i debian_package.deb || sudo apt-get install -f -y
+          if [ -d "/opt/arculus" ]; then
+            echo "App installed correctly"
+          else
+            echo "App installation failed"
+            exit 1
+          fi
+          if [ -f "/etc/systemd/system/arculus.service" ]; then
+            echo "Systemd file exists"
+          else
+            echo "Systemd file missing"
+            exit 1
+          fi
 
-        [Service]
-        User=www-data
-        Group=www-data
-        WorkingDirectory=/opt/arculus
-        ExecStart=/usr/bin/python3 /opt/arculus/apps/main.py
-        Restart=always
-        RestartSec=5
-
-        [Install]
-        WantedBy=multi-user.target" > debian_package/etc/systemd/system/arculus.service
-
-        # Create the control file
-        echo -e "Package: arculus\nVersion: 1.0.0\nSection: base\nPriority: optional\nArchitecture: all\nMaintainer: Your Name <your.email@example.com>\nDescription: Flask app with /health and /orders endpoints" > debian_package/DEBIAN/control
-        dpkg-deb --build debian_package
-
-    # Test .deb package installation
-    - name: Test .deb package installation
-      run: |
-        sudo dpkg -i debian_package.deb
-        sudo apt-get install -f -y
-        if [ -d "/opt/arculus" ]; then 
-          echo "App installed correctly"; 
-        else 
-          echo "App installation failed"; 
-          exit 1; 
-        fi
-        if [ -f "/etc/systemd/system/arculus.service" ]; then
-          echo "Systemd file exists";
-        else
-          echo "Systemd file missing";
-          exit 1;
-        fi
-
-    # Upload .deb file as an artifact
-    - name: Upload .deb package
-      uses: actions/upload-artifact@v4
-      with:
-        name: arculus.deb
-        path: debian_package.deb
+      - name: Upload .deb package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arculus.deb
+          path: debian_package.deb
