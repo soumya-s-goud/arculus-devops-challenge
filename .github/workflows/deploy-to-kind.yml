@@ -2,11 +2,18 @@ name: deploy-to-kind
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - "**"
     paths:
       - 'Dockerfile'
-      - 'src/**'
-      - 'terraform/**'
+      - 'apps/**'
+      - 'k8s/**'
+  pull_request:
+    branches:
+      - "**"
+    paths:
+      - 'Dockerfile'
+      - 'apps/**'
       - 'k8s/**'
   workflow_dispatch:
 
@@ -25,44 +32,47 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
-        uses: docker/build-push-action@v4
+      - name: Build and push image (latest + sha)
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Export image name
         id: set-image
         run: |
           IMAGE="ghcr.io/${{ github.repository_owner }}/arculus-devops-challenge:${{ github.sha }}"
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
-
   deploy:
-    name: Deploy to cluster (Terraform)
+    name: Deploy to kind cluster
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-      - name: Checkout (repo files for terraform / k8s)
+      - name: Checkout (repo files for k8s)
         uses: actions/checkout@v4
 
-      - name: Install Terraform
-        uses: hashicorp/setup-terraform@v2
+      - name: Set up kind cluster
+        uses: helm/kind-action@v1.10.0
         with:
-          terraform_version: 1.14.4
+          cluster_name: deploy-kind
 
       - name: Install kubectl (linux/amd64)
         run: |
@@ -75,38 +85,47 @@ jobs:
           curl -fsSL -o kubectl "${URL}"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/kubectl
-          kubectl version --client --short
-
-      - name: Restore kubeconfig from secret (if provided)
+          kubectl version --client
+      - name: Verify kind cluster
         run: |
-          if [ -z "${{ secrets.KUBE_CONFIG_DATA }}" ]; then
-            echo "KUBE_CONFIG_DATA secret not set; skipping kubeconfig restore"
-          else
-            echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > "${{ github.workspace }}/kubeconfig"
-            chmod 600 "${{ github.workspace }}/kubeconfig"
-            echo "KUBECONFIG=${{ github.workspace }}/kubeconfig" >> $GITHUB_ENV
-            echo "Restored kubeconfig to ${GITHUB_WORKSPACE}/kubeconfig"
-          fi
-        shell: bash
-
-      - name: Verify cluster access
-        run: |
-          if [ -z "${KUBECONFIG:-}" ]; then
-            echo "KUBECONFIG not set. Exiting."
-            exit 1
-          fi
-          kubectl version --short
           kubectl cluster-info
-        env:
-          KUBECONFIG: ${{ env.KUBECONFIG }}
-
-      - name: Terraform init
-        working-directory: ./terraform
-        run: terraform init
-
-      - name: Terraform apply
-        working-directory: ./terraform
-        env:
-          KUBECONFIG: ${{ env.KUBECONFIG }}
+          kubectl get nodes
+      - name: Deploy namespace and DB
         run: |
-          terraform apply -auto-approve -var="image_tag=${{ needs.build.outputs.image }}" -var="namespace=orders"
+          set -euo pipefail
+          kubectl apply --validate=false -f k8s/namespace.yaml
+          kubectl apply --validate=false -f k8s/secret-db.yaml
+          kubectl apply --validate=false -f k8s/postgres-deployment.yaml
+          kubectl apply --validate=false -f k8s/postgres-service.yaml
+          echo "Waiting for Postgres to be ready..."
+          kubectl rollout status deploy/postgres -n orders --timeout=180s || {
+            echo "Postgres rollout did not complete in time. Pods in orders namespace:"
+            kubectl get pods -n orders || true
+            kubectl describe deploy/postgres -n orders || true
+          }
+      - name: Deploy orders app (deployment, service, ingress)
+        run: |
+          set -euo pipefail
+          kubectl apply --validate=false -f k8s/app-deployment.yaml
+          kubectl apply --validate=false -f k8s/app-service.yaml
+          kubectl apply --validate=false -f k8s/ingress.yaml
+          echo "Waiting for orders-app to be ready (non-fatal timeout)..."
+          kubectl rollout status deploy/orders-app -n orders --timeout=180s || {
+            echo "orders-app rollout did not complete in time. Pods in orders namespace:"
+            kubectl get pods -n orders || true
+            kubectl describe deploy/orders-app -n orders || true
+            POD=$(kubectl get pods -n orders -l app=orders-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            if [ -n "$POD" ]; then
+              echo "Logs from pod $POD:"
+              kubectl logs "$POD" -n orders || true
+            else
+              echo "No orders-app pod found."
+            fi
+          }
+      - name: Smoke test /health via ClusterIP
+        run: |
+          set -euo pipefail
+          # Robust health check: simple busybox pod, no -i/--tty, retry loop
+          kubectl run curl -n orders --image=busybox:1.36 --restart=Never -- \
+            sh -c 'for i in $(seq 1 30); do echo "Attempt $i: GET /health"; wget -qO- http://orders:8000/health && exit 0; sleep 2; done; echo "Health check failed"; exit 1'
+          kubectl delete pod curl -n orders --ignore-not-found=true

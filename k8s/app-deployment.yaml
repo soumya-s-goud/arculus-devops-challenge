@@ -15,10 +15,11 @@ spec:
       labels:
         app: orders-app
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: orders
-          # Use the GHCR image pushed in Part 2
-          image: ghcr.io/soumya-s-goud/arculus-devops-challenge:sha-0b3e0e9
+          image: ghcr.io/soumya-s-goud/arculus-devops-challenge:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
@@ -29,10 +30,6 @@ spec:
                 secretKeyRef:
                   name: orders-db-credentials
                   key: DATABASE_URL
-            - name: DB_HOST
-              value: "postgres"
-            - name: DB_PORT
-              value: "5432"
           resources:
             requests:
               memory: "128Mi"

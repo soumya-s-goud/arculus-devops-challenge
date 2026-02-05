@@ -1,0 +1,94 @@
+name: deploy-monitoring-ci
+
+on:
+  push:
+    branches: [ "part4-monitoring" ]
+    paths:
+      - ".github/workflows/monitoring.yml"
+      - "k8s/**"
+      - "terraform/**"
+  pull_request:
+    branches: [ "part4-monitoring" ]
+  workflow_dispatch:
+
+jobs:
+  monitoring:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: monitoring-kind
+
+      - name: Install kubectl (linux/amd64)
+        run: |
+          set -euo pipefail
+          KUBECTL_VERSION="v1.27.0"
+          OS="linux"
+          ARCH="amd64"
+          URL="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${OS}/${ARCH}/kubectl"
+          echo "Ensuring kubectl is present from ${URL}"
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -fsSL -o kubectl "${URL}"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
+          fi
+          kubectl version --client
+
+      - name: Deploy orders app stack (namespace, DB, deployment, service, ingress)
+        run: |
+          set -euo pipefail
+          kubectl apply --validate=false -f k8s/namespace.yaml
+          kubectl apply --validate=false -f k8s/secret-db.yaml
+          kubectl apply --validate=false -f k8s/postgres-deployment.yaml
+          kubectl apply --validate=false -f k8s/postgres-service.yaml
+          kubectl apply --validate=false -f k8s/app-deployment.yaml
+          kubectl apply --validate=false -f k8s/app-service.yaml
+          kubectl apply --validate=false -f k8s/ingress.yaml
+
+          echo "Waiting for postgres and orders-app to be ready (non-fatal timeout)..."
+          kubectl rollout status deploy/postgres -n orders --timeout=180s || {
+            echo "Postgres rollout did not complete in time:"
+            kubectl get pods -n orders || true
+            kubectl describe deploy/postgres -n orders || true
+          }
+          kubectl rollout status deploy/orders-app -n orders --timeout=180s || {
+            echo "orders-app rollout did not complete in time:"
+            kubectl get pods -n orders || true
+            kubectl describe deploy/orders-app -n orders || true
+            POD=$(kubectl get pods -n orders -l app=orders-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            if [ -n "$POD" ]; then
+              echo "Logs from pod $POD:"
+              kubectl logs "$POD" -n orders || true
+            else
+              echo "No orders-app pod found."
+            fi
+          }
+
+      - name: Smoke test application /health
+        run: |
+          set -euo pipefail
+          # More robust health check: simple busybox pod, no -i/--tty, retry loop
+          kubectl run curl -n orders --image=busybox:1.36 --restart=Never -- \
+            sh -c 'for i in $(seq 1 30); do echo "Attempt $i: GET /health"; wget -qO- http://orders:8000/health && exit 0; sleep 2; done; echo "Health check failed"; exit 1'
+          kubectl delete pod curl -n orders --ignore-not-found=true
+
+      - name: Install monitoring stack (Prometheus + Grafana)
+        run: |
+          set -euo pipefail
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            --namespace monitoring --create-namespace \
+            --set grafana.enabled=true \
+            --wait --timeout 10m
+
+      - name: Verify monitoring components
+        run: |
+          kubectl get pods -n monitoring
+          kubectl get svc -n monitoring

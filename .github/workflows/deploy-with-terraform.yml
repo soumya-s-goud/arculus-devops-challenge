@@ -1,0 +1,92 @@
+name: deploy-with-terraform
+
+on:
+  push:
+    branches:
+      - "main"
+      - "part*"
+    paths:
+      - "terraform/**"
+      - "k8s/**"
+      - ".github/workflows/deploy-with-terraform.yml"
+  pull_request:
+    branches:
+      - "main"
+      - "part*"
+  workflow_dispatch:
+
+jobs:
+  terraform-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      TF_WORKING_DIR: terraform
+      IMAGE_TAG: "latest"
+      NAMESPACE: "orders"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: terraform-kind
+
+      - name: Install kubectl (linux/amd64)
+        run: |
+          set -euo pipefail
+          KUBECTL_VERSION="v1.27.0"
+          OS="linux"
+          ARCH="amd64"
+          URL="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/${OS}/${ARCH}/kubectl"
+          echo "Downloading kubectl from ${URL}"
+          curl -fsSL -o kubectl "${URL}"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform apply (namespace, secret, DB, service, ingress)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+        run: |
+          set -euo pipefail
+          terraform apply -auto-approve \
+            -var="image_tag=${IMAGE_TAG}" \
+            -var="namespace=${NAMESPACE}"
+
+      - name: Deploy orders app Deployment via kubectl
+        run: |
+          set -euo pipefail
+          kubectl apply --validate=false -f k8s/app-deployment.yaml
+
+          echo "Waiting for orders-app to be ready (non-fatal timeout)..."
+          kubectl rollout status deploy/orders-app -n ${NAMESPACE} --timeout=180s || {
+            echo "orders-app rollout did not complete in time. Pods in ${NAMESPACE} namespace:"
+            kubectl get pods -n ${NAMESPACE} || true
+            kubectl describe deploy/orders-app -n ${NAMESPACE} || true
+            POD=$(kubectl get pods -n ${NAMESPACE} -l app=orders-app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            if [ -n "$POD" ]; then
+              echo "Logs from pod $POD:"
+              kubectl logs "$POD" -n ${NAMESPACE} || true
+            else
+              echo "No orders-app pod found."
+            fi
+          }
+
+      - name: Smoke test /health via ClusterIP
+        run: |
+          set -euo pipefail
+          kubectl run curl -n ${NAMESPACE} --image=busybox:1.36 --restart=Never -- \
+            sh -c 'for i in $(seq 1 30); do echo "Attempt $i: GET /health"; wget -qO- http://orders:8000/health && exit 0; sleep 2; done; echo "Health check failed"; exit 1'
+          kubectl delete pod curl -n ${NAMESPACE} --ignore-not-found=true

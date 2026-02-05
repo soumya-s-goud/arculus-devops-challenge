@@ -1,0 +1,29 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: orders-alerts
+  namespace: monitoring
+  labels:
+    app: orders
+    release: kube-prometheus-stack
+spec:
+  groups:
+  - name: orders
+    interval: 30s
+    rules:
+    - alert: OrdersDown
+      expr: up{job="orders"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Orders service is down"
+        description: "Orders application has been down for more than 1 minute"
+    - alert: HighErrorRate
+      expr: rate(flask_http_request_total{status=~"5.."}[5m]) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High error rate detected"
+        description: "Error rate is above 10% for 5 minutes"
