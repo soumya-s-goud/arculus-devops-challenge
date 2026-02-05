@@ -1,0 +1,36 @@
+{
+  "uid": "orders-api",
+  "title": "Orders API Overview",
+  "schemaVersion": 36,
+  "version": 1,
+  "panels": [
+    {
+      "type": "graph",
+      "title": "HTTP Requests per Second",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{job=\"orders-app\"}[1m]))",
+          "legendFormat": "req/s",
+          "refId": "A"
+        }
+      ],
+      "id": 1
+    },
+    {
+      "type": "graph",
+      "title": "HTTP 5xx Rate",
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{job=\"orders-app\",status=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"orders-app\"}[5m]))",
+          "legendFormat": "5xx rate",
+          "refId": "B"
+        }
+      ],
+      "id": 2
+    }
+  ],
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  }
+}

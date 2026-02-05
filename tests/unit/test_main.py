@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+
 @patch("apps.main.start_application", return_value=None)
 def test_main_block(mock_start_application):
     """

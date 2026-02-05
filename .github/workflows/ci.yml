@@ -101,6 +101,15 @@ jobs:
           # Verify Flask is running
           curl -v http://localhost:5000/health || (echo "Flask health check failed" && cat flask_app.log && exit 1)
 
+          echo "Checking /orders (integration test)..."
+          # GET /orders should respond 200
+          curl -v http://localhost:5000/orders || (echo "/orders check failed" && cat flask_app.log && exit 1)
+          # Optional: POST an order and then GET again to verify persistence
+          curl -X POST -H "Content-Type: application/json" \
+               -d '{"id": "ci-test-1", "amount": 123.45}' \
+               http://localhost:5000/orders || (echo "POST /orders failed" && cat flask_app.log && exit 1)
+          curl -v http://localhost:5000/orders || (echo "GET /orders after POST failed" && cat flask_app.log && exit 1)
+
           # Keep Flask PID for later
           echo $FLASK_PID > flask.pid
 
@@ -209,3 +218,23 @@ jobs:
         with:
           name: arculus.deb
           path: debian_package.deb
+      
+  validate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -L https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate Kubernetes manifests with kubeconform
+        run: |
+          set -euo pipefail
+          kubeconform -strict -ignore-missing-schemas \
+            -summary \
+            -schema-location default \
+            k8s/*.yaml
